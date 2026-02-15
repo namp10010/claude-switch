@@ -4,6 +4,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 // --- Claude Code's own credential/config structures ---
 
@@ -150,6 +151,44 @@ pub fn claude_json_path() -> PathBuf {
     home::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".claude.json")
+}
+
+// --- Credential reading (flat-file with macOS keychain fallback) ---
+
+/// Read the `claudeAiOauth` value, trying the flat file first then the macOS keychain.
+pub fn read_oauth_credentials() -> Option<serde_json::Value> {
+    // 1. Try flat-file credentials
+    let file_creds = fs::read(credentials_path())
+        .ok()
+        .and_then(|data| serde_json::from_slice::<HashMap<String, serde_json::Value>>(&data).ok())
+        .and_then(|doc| doc.get("claudeAiOauth").cloned());
+
+    if file_creds.is_some() {
+        return file_creds;
+    }
+
+    // 2. Fallback: macOS keychain
+    read_keychain_credentials()
+}
+
+#[cfg(target_os = "macos")]
+fn read_keychain_credentials() -> Option<serde_json::Value> {
+    let account = std::env::var("USER").ok()?;
+    let output = Command::new("security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials", "-a", &account, "-w"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let json_str = String::from_utf8(output.stdout).ok()?;
+    let doc: HashMap<String, serde_json::Value> = serde_json::from_str(json_str.trim()).ok()?;
+    doc.get("claudeAiOauth").cloned()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_keychain_credentials() -> Option<serde_json::Value> {
+    None
 }
 
 // --- File I/O with 0600 permissions ---

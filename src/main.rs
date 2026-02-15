@@ -3,14 +3,13 @@ mod profile;
 
 use crate::profile::{
     OAuthAccount, OAuthCredentials, Profile,
-    claude_json_path, clear_auth, credentials_path,
+    claude_json_path, clear_auth, read_oauth_credentials,
     list_profiles, load_profile, load_state, remove_profile, save_profile, save_state,
     write_credentials, write_oauth_account,
 };
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use comfy_table::{presets, Attribute, Cell, CellAlignment, Color, ContentArrangement, Table};
-use std::collections::HashMap;
 use std::fs;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
@@ -96,13 +95,9 @@ fn cmd_add(name: &str) -> anyhow::Result<()> {
 
     // Import the fresh credentials that Claude's auth flow just wrote.
     // /login can produce either OAuth creds or an API key.
-    let creds_path = credentials_path();
     let claude_path = claude_json_path();
 
-    let oauth_creds = fs::read(&creds_path)
-        .ok()
-        .and_then(|data| serde_json::from_slice::<HashMap<String, serde_json::Value>>(&data).ok())
-        .and_then(|doc| doc.get("claudeAiOauth").cloned());
+    let oauth_creds = read_oauth_credentials();
 
     let api_key = fs::read(&claude_path)
         .ok()
@@ -151,13 +146,9 @@ fn cmd_import(name: &str) -> anyhow::Result<()> {
         anyhow::bail!("profile '{name}' already exists (use 'remove' first)");
     }
 
-    let creds_path = credentials_path();
     let claude_path = claude_json_path();
 
-    let oauth_creds = fs::read(&creds_path)
-        .ok()
-        .and_then(|data| serde_json::from_slice::<HashMap<String, serde_json::Value>>(&data).ok())
-        .and_then(|doc| doc.get("claudeAiOauth").cloned());
+    let oauth_creds = read_oauth_credentials();
 
     let api_key = fs::read(&claude_path)
         .ok()
