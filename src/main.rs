@@ -1,6 +1,7 @@
 mod oauth;
 mod profile;
 
+use crate::oauth::RefreshError;
 use crate::profile::{
     OAuthAccount, OAuthCredentials, Profile,
     claude_json_path, clear_auth, read_oauth_credentials,
@@ -204,12 +205,38 @@ fn cmd_use(name: &str) -> anyhow::Result<()> {
             // Refresh if expired
             if oauth::is_expired(&credentials) {
                 eprintln!("Token expired, refreshing...");
-                credentials = oauth::refresh_token(&credentials)?;
-                // Save updated tokens back to the profile
-                save_profile(name, &Profile::OAuth {
-                    credentials: credentials.clone(),
-                    account: account.clone(),
-                })?;
+                match oauth::refresh_token(&credentials) {
+                    Ok(refreshed_creds) => {
+                        credentials = refreshed_creds;
+                        // Save updated tokens back to the profile
+                        save_profile(name, &Profile::OAuth {
+                            credentials: credentials.clone(),
+                            account: account.clone(),
+                        })?;
+                    }
+                    Err(RefreshError::InvalidGrant) => {
+                        // Refresh token is invalid, trigger re-authentication
+                        let new_profile = reauthenticate_profile(name)?;
+                        if let Profile::OAuth { credentials: new_creds, account: new_account } = new_profile {
+                            credentials = new_creds;
+                            // Update the account info as well
+                            write_credentials(&credentials)?;
+                            write_oauth_account(&new_account)?;
+                            
+                            let mut state = load_state();
+                            state.active_profile = Some(name.to_string());
+                            save_state(&state)?;
+                            
+                            eprintln!("Switched to '{name}' (re-authenticated)");
+                            return Ok(());
+                        } else {
+                            anyhow::bail!("re-authentication resulted in non-OAuth profile");
+                        }
+                    }
+                    Err(RefreshError::Other(e)) => {
+                        return Err(e);
+                    }
+                }
             }
 
             write_credentials(&credentials)?;
@@ -330,11 +357,32 @@ fn cmd_exec(name: &str, cmd: &[String]) -> anyhow::Result<()> {
         Profile::OAuth { mut credentials, account } => {
             if oauth::is_expired(&credentials) {
                 eprintln!("Token expired, refreshing...");
-                credentials = oauth::refresh_token(&credentials)?;
-                save_profile(name, &Profile::OAuth {
-                    credentials: credentials.clone(),
-                    account,
-                })?;
+                match oauth::refresh_token(&credentials) {
+                    Ok(refreshed_creds) => {
+                        credentials = refreshed_creds;
+                        save_profile(name, &Profile::OAuth {
+                            credentials: credentials.clone(),
+                            account,
+                        })?;
+                    }
+                    Err(RefreshError::InvalidGrant) => {
+                        // Refresh token is invalid, trigger re-authentication
+                        let new_profile = reauthenticate_profile(name)?;
+                        if let Profile::OAuth { credentials: new_creds, account: _new_account } = new_profile {
+                            credentials = new_creds;
+                            let err = Command::new(&cmd[0])
+                                .args(&cmd[1..])
+                                .env("CLAUDE_CODE_OAUTH_TOKEN", &credentials.access_token)
+                                .exec();
+                            anyhow::bail!("exec failed: {err}");
+                        } else {
+                            anyhow::bail!("re-authentication resulted in non-OAuth profile");
+                        }
+                    }
+                    Err(RefreshError::Other(e)) => {
+                        return Err(e);
+                    }
+                }
             }
 
             let err = Command::new(&cmd[0])
@@ -356,4 +404,62 @@ fn cmd_exec(name: &str, cmd: &[String]) -> anyhow::Result<()> {
 
 fn profile_exists(name: &str) -> bool {
     load_profile(name).is_ok()
+}
+
+fn reauthenticate_profile(name: &str) -> anyhow::Result<Profile> {
+    eprintln!("Refresh token expired for profile '{name}'. Please re-authenticate...");
+    
+    // Clear Claude's auth so the CLI triggers its first-run login flow
+    clear_auth()?;
+
+    let status = Command::new("claude")
+        .arg("/login")
+        .status()?;
+
+    if !status.success() {
+        anyhow::bail!("claude exited with {status} — re-authentication failed");
+    }
+
+    // Import the fresh credentials that Claude's auth flow just wrote.
+    let claude_path = claude_json_path();
+
+    let oauth_creds = read_oauth_credentials();
+
+    let api_key = fs::read(&claude_path)
+        .ok()
+        .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
+        .and_then(|doc| doc.get("primaryApiKey")?.as_str().map(String::from));
+
+    let profile = if let Some(oauth_value) = oauth_creds {
+        let credentials: OAuthCredentials = serde_json::from_value(oauth_value)?;
+        let account: OAuthAccount = fs::read(&claude_path)
+            .ok()
+            .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
+            .and_then(|doc| doc.get("oauthAccount").cloned())
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        Profile::OAuth {
+            credentials,
+            account: Box::new(account),
+        }
+    } else if let Some(key) = api_key {
+        Profile::ApiKey { api_key: key, label: None }
+    } else {
+        anyhow::bail!("no credentials found after login — did auth complete?");
+    };
+
+    // Save the updated profile
+    save_profile(name, &profile)?;
+    
+    match &profile {
+        Profile::OAuth { account, .. } => {
+            let email = account.email_address.as_deref().unwrap_or("(unknown)");
+            eprintln!("Profile '{name}' re-authenticated ({email})");
+        }
+        Profile::ApiKey { .. } => {
+            eprintln!("Profile '{name}' re-authenticated (API key)");
+        }
+    }
+
+    Ok(profile)
 }
