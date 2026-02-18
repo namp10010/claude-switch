@@ -18,7 +18,7 @@ Usage: claude-switch <command> [arguments]
 Commands:
   add <name>              Add a new profile (logs out, launches auth flow, imports result)
   import <name>           Import currently active Claude Code credentials as a named profile
-  use <name>              Switch to a named profile
+  use <name> [-k|--kill]  Switch to a named profile (--kill terminates running Claude sessions)
   list                    List all profiles
   remove <name>           Remove a profile
   exec <name> -- <cmd>    Run a command with a profile's credentials injected
@@ -37,7 +37,21 @@ func main() {
 	case "import":
 		err = requireName("import", cmdImport)
 	case "use":
-		err = requireName("use", cmdUse)
+		kill := false
+		args := os.Args[2:]
+		filtered := args[:0]
+		for _, a := range args {
+			if a == "--kill" || a == "-k" {
+				kill = true
+			} else {
+				filtered = append(filtered, a)
+			}
+		}
+		if len(filtered) == 0 {
+			err = fmt.Errorf("use requires a profile name")
+		} else {
+			err = cmdUse(filtered[0], kill)
+		}
 	case "list":
 		err = cmdList()
 	case "remove":
@@ -132,7 +146,32 @@ func cmdImport(name string) error {
 	return nil
 }
 
-func cmdUse(name string) error {
+func claudePIDs() []int {
+	out, err := exec.Command("pgrep", "-x", "claude").Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, s := range strings.Fields(string(out)) {
+		var pid int
+		if _, err := fmt.Sscanf(s, "%d", &pid); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+func cmdUse(name string, kill bool) error {
+	if pids := claudePIDs(); len(pids) > 0 {
+		if kill {
+			exec.Command("pkill", "-x", "claude").Run()
+			fmt.Fprintln(os.Stderr, "Terminated running Claude sessions.")
+		} else {
+			fmt.Fprintln(os.Stderr, "Warning: Claude is running. It may overwrite the switched credentials.")
+			fmt.Fprintln(os.Stderr, "Re-run with --kill to terminate existing sessions before switching.")
+		}
+	}
+
 	profile, err := loadProfile(name)
 	if err != nil {
 		return err
