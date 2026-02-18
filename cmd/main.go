@@ -70,11 +70,6 @@ func cmdAdd(name string) error {
 		return fmt.Errorf("profile '%s' already exists (use 'remove' first)", name)
 	}
 
-	state := loadState()
-	if state.ActiveProfile == nil {
-		return fmt.Errorf("no active profile — run 'claude-switch import <name>' first to save your current session")
-	}
-
 	// Clear Claude's auth so the CLI triggers its first-run login flow
 	if err := clearAuth(); err != nil {
 		return err
@@ -97,7 +92,7 @@ func cmdAdd(name string) error {
 		return err
 	}
 
-	state = loadState()
+	state := loadState()
 	state.ActiveProfile = &name
 	if err := saveState(&state); err != nil {
 		return err
@@ -159,6 +154,9 @@ func cmdUse(name string) error {
 					if err := writeCredentials(newProfile.Credentials); err != nil {
 						return err
 					}
+					if err := writeKeychainCredentials(newProfile.Credentials); err != nil {
+						return err
+					}
 					if err := writeOAuthAccount(newProfile.Account); err != nil {
 						return err
 					}
@@ -179,6 +177,9 @@ func cmdUse(name string) error {
 		}
 
 		if err := writeCredentials(profile.Credentials); err != nil {
+			return err
+		}
+		if err := writeKeychainCredentials(profile.Credentials); err != nil {
 			return err
 		}
 		if err := writeOAuthAccount(profile.Account); err != nil {

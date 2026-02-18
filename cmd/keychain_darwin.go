@@ -28,3 +28,21 @@ func readKeychainCredentials() json.RawMessage {
 	}
 	return nil
 }
+
+func writeKeychainCredentials(creds *OAuthCredentials) error {
+	account := os.Getenv("USER")
+	if account == "" {
+		return nil
+	}
+	credsJSON, err := json.Marshal(creds)
+	if err != nil {
+		return err
+	}
+	doc := map[string]json.RawMessage{"claudeAiOauth": credsJSON}
+	docJSON, err := json.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	return exec.Command("security", "add-generic-password",
+		"-U", "-s", "Claude Code-credentials", "-a", account, "-w", string(docJSON)).Run()
+}
