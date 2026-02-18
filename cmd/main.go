@@ -384,21 +384,19 @@ func importCurrentCredentials() (*Profile, error) {
 			return nil, fmt.Errorf("failed to parse OAuth credentials: %w", err)
 		}
 
-		account := OAuthAccount{}
+		var account json.RawMessage
 		data, err := os.ReadFile(claudePath)
 		if err == nil {
 			var doc map[string]json.RawMessage
 			if json.Unmarshal(data, &doc) == nil {
-				if raw, ok := doc["oauthAccount"]; ok {
-					json.Unmarshal(raw, &account)
-				}
+				account = doc["oauthAccount"]
 			}
 		}
 
 		return &Profile{
 			Type:        "oauth",
 			Credentials: &creds,
-			Account:     &account,
+			Account:     account,
 		}, nil
 	}
 

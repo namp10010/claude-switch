@@ -20,31 +20,31 @@ type OAuthCredentials struct {
 	RateLimitTier    *string  `json:"rateLimitTier,omitempty"`
 }
 
-type OAuthAccount struct {
-	AccountUUID          *string `json:"accountUuid,omitempty"`
-	EmailAddress         *string `json:"emailAddress,omitempty"`
-	OrganizationUUID     *string `json:"organizationUuid,omitempty"`
-	DisplayName          *string `json:"displayName,omitempty"`
-	OrganizationRole     *string `json:"organizationRole,omitempty"`
-	OrganizationName     *string `json:"organizationName,omitempty"`
-	HasExtraUsageEnabled *bool   `json:"hasExtraUsageEnabled,omitempty"`
-}
-
 // --- Profile (tagged union via "type" field) ---
 
 type Profile struct {
 	Type        string            `json:"type"`
 	Credentials *OAuthCredentials `json:"credentials,omitempty"`
-	Account     *OAuthAccount     `json:"account,omitempty"`
+	Account     json.RawMessage   `json:"account,omitempty"`
 	ApiKey      string            `json:"api_key,omitempty"`
 	Label       *string           `json:"label,omitempty"`
 }
 
-func (p *Profile) DisplayEmail() string {
-	if p.Type == "oauth" && p.Account != nil && p.Account.EmailAddress != nil {
-		return *p.Account.EmailAddress
+func accountField(account json.RawMessage, key string) string {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(account, &doc) != nil {
+		return ""
 	}
+	var s string
+	json.Unmarshal(doc[key], &s)
+	return s
+}
+
+func (p *Profile) DisplayEmail() string {
 	if p.Type == "oauth" {
+		if email := accountField(p.Account, "emailAddress"); email != "" {
+			return email
+		}
 		return "(unknown)"
 	}
 	return "-"
@@ -55,8 +55,10 @@ func (p *Profile) DisplayType() string {
 }
 
 func (p *Profile) DisplayOrg() string {
-	if p.Type == "oauth" && p.Account != nil && p.Account.OrganizationName != nil {
-		return *p.Account.OrganizationName
+	if p.Type == "oauth" {
+		if org := accountField(p.Account, "organizationName"); org != "" {
+			return org
+		}
 	}
 	return "-"
 }
@@ -293,7 +295,10 @@ func writeCredentials(creds *OAuthCredentials) error {
 	return writeSecure(path, out)
 }
 
-func writeOAuthAccount(account *OAuthAccount) error {
+func writeOAuthAccount(account json.RawMessage) error {
+	if account == nil {
+		return nil
+	}
 	path := claudeJSONPath()
 	var doc map[string]json.RawMessage
 
@@ -306,11 +311,7 @@ func writeOAuthAccount(account *OAuthAccount) error {
 		doc = make(map[string]json.RawMessage)
 	}
 
-	accountJSON, err := json.Marshal(account)
-	if err != nil {
-		return err
-	}
-	doc["oauthAccount"] = accountJSON
+	doc["oauthAccount"] = account
 
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
